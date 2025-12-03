@@ -1,0 +1,136 @@
+//// Followed GameMaker's Game Optimization tips. Big thanks to Gurpreet S. Matharoo for the tutorial. 
+
+/// Textures.
+
+draw_texture_flush();
+
+draw_texture_flush();
+sprite_prefetch(spr_logo);
+sprite_prefetch(spr_menu);
+
+/// Dynamic Textures.
+
+texturegroup_load(groupname, [prefetch=true])
+
+texturegroup_unload(groupname)
+
+/// Depth Buffer.
+
+gpu_set_zwriteenable(true);
+
+surface_depth_disable(true);
+
+gpu_set_zwriteenable(false);
+gpu_set_ztestenable(false);
+
+/// Blend Modes.
+
+gpu_set_blendmode(bm_add);
+with (obj_HUD) draw_sprite(spr_Marker, 0, mx, my);
+with (obj_Player) draw_sprite(spr_HaloEffect, 0, x, y);
+with (obj_Cursor) draw_self();
+gpu_set_blendmode(bm_normal);
+
+/// Alpha Blending and Alpha Testing.
+
+function blend_additive()
+{
+   if (event_type == ev_draw && event_number == ev_draw_normal)
+   {
+       gpu_set_blendmode(bm_add);
+   }
+}
+function blend_normal()
+{
+   if (event_type == ev_draw && event_number == ev_draw_normal)
+   {
+       gpu_set_blendmode(bm_normal);
+   }
+}
+
+var _layer_id = layer_get_id("Instances");
+layer_script_begin(_layer_id, blend_additive);
+layer_script_end(_layer_id, blend_normal);
+
+/// Sound.
+
+if (mouse_check_button(mb_left) && mouse_x > 200 && global.canshoot == true)
+{
+   // Do something
+}
+
+/// Variables.
+
+repeat(argument0)
+{
+   with (obj_Parent)
+   {
+       if place_meeting(global.px, global.py, argument1) instance_destroy();
+   }
+}
+
+var _xx = global.px;
+var _yy = global.py;
+repeat(argument0)
+{
+   with (obj_Parent)
+   {
+       if place_meeting(_xx, _yy, argument1) instance_destroy();
+   }
+}
+
+/// Local Variables.
+
+var _xx = camera_get_view_x(view_camera[0]) + (camera_get_view_width(view_camera[0]) / 2);
+var _xx = camera_get_view_y(view_camera[0]) + (camera_get_view_height(view_camera[0]) / 2);
+draw_sprite(spr_Crosshair, 0, _xx, _yy);
+draw_text(_xx, _yy, dist);
+
+/// Arrays.
+
+myarray[99] = 0;
+
+// or
+
+array_create(100, 0);
+
+for(var i = 255; i > -1; --i;)
+{
+   myarray[i] = make_color_hsv(irandom(255), 150, 255);
+}
+
+/// Structs.
+
+/// Create Event
+my_struct =
+{
+   a: 7,
+   b: 8,
+   c: 9
+};
+
+/// Step Event
+my_struct.a = x;  // The variable name "a" never changes throughout the game so the compiler can optimise this
+// OR:
+// my_struct[$ "a"] = x;
+
+/// Create Event
+my_struct =
+{
+   a: 7,
+   b: 8,
+   c: 9
+};
+
+randomise();
+varname = choose("a", "b", "c");            // varname cannot be known at compile-time
+varname_hash = variable_get_hash(varname);  // Get the hash of the variable name that varname currently holds
+
+/// Step Event
+// my_struct[$ varname] = x;                // Here, GameMaker needs to recalculate the hash from the name every step
+struct_set_from_hash(my_struct, varname_hash, x);  // Here, the hash is used directly
+
+/// Key Pressed Event - Space
+varname = choose("a", "b", "c");            // Change to another random struct variable to access
+varname_hash = variable_get_hash(varname);  // Update the hash accordingly!
+
