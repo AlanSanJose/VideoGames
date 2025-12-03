@@ -1,4 +1,5 @@
 /// More platformer test in GameMaker.
+/// Big thanks to Gurpreet S. Matharoo for the tutorial.
 
 move_speed = 4;
 jump_speed = 16;
