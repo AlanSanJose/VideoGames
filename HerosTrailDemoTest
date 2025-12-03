@@ -1,4 +1,5 @@
 // Did a tutorial on GameMaker's make your own action adventure game. This involves character interactions within a demo game. Here's some codes from the game.
+/// Big thanks to Gurpreet S. Matharoo for the tutorial.
 
 // The movement speed of the
 // enemy along its path.
