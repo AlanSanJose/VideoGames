@@ -1,0 +1,452 @@
+/// Test scripts for a 3D Platformer on Roblox Studio.
+/// Thanks to Roblox Corporation for the 3D Platformer test.
+
+--[[
+	CharacterLeanScript - This script makes characters slightly lean in the direction they are moving.
+
+	Each Step the character's Root joint Transform is updated based on the character's velocity.
+--]]
+
+local RunService = game:GetService("RunService")
+local StarterPlayer = game:GetService("StarterPlayer")
+
+-- Since this script has RunContext of Client, it will run anywhere regardless of its parent.
+-- We only want it to run when it's parented to a character so we'll return immediately if it's in StarterCharacterScripts.
+if script.Parent == StarterPlayer.StarterCharacterScripts then
+	return
+end
+
+local character = script.Parent
+-- Characters are not replicated atomically so we need to wait for children
+local humanoid = character:WaitForChild("Humanoid")
+local root = character:WaitForChild("HumanoidRootPart")
+local rootJoint = character:WaitForChild("LowerTorso"):WaitForChild("Root")
+
+local ROLL_ANGLE = math.rad(15)
+local PITCH_ANGLE = math.rad(5)
+local LEAN_SPEED = 10
+
+local leanCFrame = CFrame.new()
+
+local function onStepped(_: number, deltaTime: number)
+	local moveVelocity = humanoid:GetMoveVelocity()
+	local relativeVelocity = root.CFrame:VectorToObjectSpace(moveVelocity)
+
+	-- Calculate pitch and roll based on the character's relative velocity
+	local pitch = 0
+	local roll = 0
+	if humanoid.WalkSpeed ~= 0 then
+		pitch = math.clamp(relativeVelocity.Z / humanoid.WalkSpeed, -1, 1) * PITCH_ANGLE
+		roll = -math.clamp(relativeVelocity.X / humanoid.WalkSpeed, -1, 1) * ROLL_ANGLE
+	end
+
+	leanCFrame = leanCFrame:Lerp(CFrame.Angles(pitch, 0, roll), math.min(deltaTime * LEAN_SPEED, 1))
+	-- Apply the leaning to the rootJoint's Transform
+	rootJoint.Transform = leanCFrame * rootJoint.Transform
+end
+
+RunService.Stepped:Connect(onStepped)
+
+--[[
+	CoinsScript - This script implements the coin pickup system. Leaderstats are used to keep track of
+	the amount of coins each player has. Clients detect pickups locally for minimal latency, so this script
+	does validation to ensure they are only able to pick up nearby coins.
+--]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local Constants = require(ReplicatedStorage.Gameplay.Constants)
+local validateInstance = require(ServerScriptService.Utility.TypeValidation.validateInstance)
+
+local remotes = ReplicatedStorage.Gameplay.Remotes
+local pickupCoinRemote = remotes.PickupCoin
+
+local MAX_PICKUP_DISTANCE = 50
+
+local playerCoins = {}
+
+local function onPlayerAdded(player: Player)
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local coins = Instance.new("IntValue")
+	coins.Name = "Coins"
+	coins.Parent = leaderstats
+end
+
+local function onPlayerRemoving(player: Player)
+	-- Clean up references so we don't leak memory
+	if playerCoins[player] then
+		playerCoins[player] = nil
+	end
+end
+
+local function onPickupCoinFunction(player: Player, coin: BasePart): boolean
+	-- Validate the argument being passed
+	if not validateInstance(coin, "BasePart") then
+		return false
+	end
+
+	-- Make sure the player is actually trying to pick up a coin
+	if not coin:HasTag(Constants.COIN_TAG) then
+		return false
+	end
+
+	-- Make sure the player hasn't already picked up this coin
+	if not playerCoins[player] then
+		playerCoins[player] = {}
+	end
+	if playerCoins[player][coin] then
+		return false
+	end
+
+	-- Make sure the character is within a reasonable distance from the coin
+	local character = player.Character
+	if not character then
+		return false
+	end
+	local distance = (character:GetPivot().Position - coin.Position).Magnitude
+	if distance > MAX_PICKUP_DISTANCE then
+		return false
+	end
+
+	-- Increment the player's Coins leaderstats
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not leaderstats then
+		return false
+	end
+	local coins = leaderstats:FindFirstChild("Coins")
+	if not coins then
+		return false
+	end
+	coins.Value += 1
+
+	-- Save this coin as picked up so the player can't pick it up multiple times
+	-- This is stored per player since we want multiple players to be able to pick up each coin
+	playerCoins[player][coin] = true
+
+	-- Return true so the client knows it successfully picked up the coin
+	return true
+end
+
+local function initialize()
+	Players.PlayerAdded:Connect(onPlayerAdded)
+	Players.PlayerRemoving:Connect(onPlayerRemoving)
+
+	pickupCoinRemote.OnServerInvoke = onPickupCoinFunction
+end
+
+initialize()
+
+--[[
+	MovingPlatformsScript - This script creates and destroys MovingPlatformController classes as necessary for any
+	instances tagged with Constants.MOVING_PLATFORM_TAG.
+--]]
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Constants = require(ReplicatedStorage.Gameplay.Constants)
+local MovingPlatformController = require(script.Parent.MovingPlatformController)
+
+local movingPlatformControllers = {}
+
+local function onMovingPlatformAdded(platform: Instance)
+	if movingPlatformControllers[platform] then
+		return
+	end
+
+	local controller = MovingPlatformController.new(platform)
+	movingPlatformControllers[platform] = controller
+
+	controller:move()
+end
+
+local function onMovingPlatformRemoved(platform: Instance)
+	if movingPlatformControllers[platform] then
+		movingPlatformControllers[platform]:destroy()
+		movingPlatformControllers[platform] = nil
+	end
+end
+
+local function initialize()
+	CollectionService:GetInstanceAddedSignal(Constants.MOVING_PLATFORM_TAG):Connect(onMovingPlatformAdded)
+	CollectionService:GetInstanceRemovedSignal(Constants.MOVING_PLATFORM_TAG):Connect(onMovingPlatformRemoved)
+
+	for _, platform in CollectionService:GetTagged(Constants.MOVING_PLATFORM_TAG) do
+		onMovingPlatformAdded(platform)
+	end
+end
+
+initialize()
+
+--[[
+	OneWayPlatformsScript - This script sets up the collision groups for one way platforms. This is
+	necessary to avoid issues with moving platforms and distributed physics simulation.
+
+	For example: If a player is above a platform (i.e. CanCollide = true) and has simulation ownership of it,
+	its movement will be affected since the client sees it as collidable. This can lead to cases where the
+	platform will run into other characters and glitch out.
+
+	To fix this, we assign the platforms and characters to collision groups which do not collide with each other.
+	Each player locally assigns their character back to a collision group which does collide with the platforms.
+	This allows the client to simulate collisions with its own character but not with other characters.
+--]]
+
+local CollectionService = game:GetService("CollectionService")
+local PhysicsService = game:GetService("PhysicsService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Constants = require(ReplicatedStorage.Gameplay.Constants)
+local safePlayerAdded = require(ReplicatedStorage.Utility.safePlayerAdded)
+
+local function onCharacterAdded(character: Model)
+	character.DescendantAdded:Connect(function(descendant: Instance)
+		if descendant:IsA("BasePart") then
+			descendant.CollisionGroup = Constants.CHARACTER_GROUP
+		end
+	end)
+
+	for _, descendant in character:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.CollisionGroup = Constants.CHARACTER_GROUP
+		end
+	end
+end
+
+local function onPlayerAdded(player: Player)
+	player.CharacterAdded:Connect(onCharacterAdded)
+
+	if player.Character then
+		onCharacterAdded(player.Character)
+	end
+end
+
+local function onPlatformAdded(platform: Instance)
+	assert(platform:IsA("BasePart"), `{platform} should be a BasePart`)
+
+	platform.CollisionGroup = Constants.ONE_WAY_PLATFORM_GROUP
+end
+
+local function initializeCollisionGroups()
+	PhysicsService:RegisterCollisionGroup(Constants.CHARACTER_GROUP)
+	PhysicsService:RegisterCollisionGroup(Constants.LOCAL_CHARACTER_GROUP)
+	PhysicsService:RegisterCollisionGroup(Constants.ONE_WAY_PLATFORM_GROUP)
+
+	PhysicsService:CollisionGroupSetCollidable(Constants.CHARACTER_GROUP, Constants.ONE_WAY_PLATFORM_GROUP, false)
+end
+
+local function initialize()
+	initializeCollisionGroups()
+
+	CollectionService:GetInstanceAddedSignal(Constants.ONE_WAY_PLATFORM_TAG):Connect(onPlatformAdded)
+	safePlayerAdded(onPlayerAdded)
+
+	for _, platform in CollectionService:GetTagged(Constants.ONE_WAY_PLATFORM_TAG) do
+		onPlatformAdded(platform)
+	end
+end
+
+initialize()
+
+--[[
+	ControlScript - This script handles input and character control, redirecting default inputs
+	to the Controller class.
+
+	Since interfacing with the PlayerScripts is difficult without forking, a RenderStep loop
+	is used to read movement and jump values from the local character's humanoid for input.
+	Those values are then modified by the Controller and written back in order to implement
+	features such as momentum.
+--]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Constants = require(ReplicatedStorage.Platformer.Constants)
+local ActionManager = require(ReplicatedStorage.Utility.ActionManager)
+local Controller = require(script.Parent.Controller)
+
+local player = Players.LocalPlayer
+
+local currentController = nil
+local wasJumping = false
+
+local function onCharacterAdded(character: Model)
+	-- Create a new controller for the character
+	local controller = Controller.new(character)
+
+	-- Clean up the controller when the character is Destroyed
+	local ancestryChangedConnection
+	ancestryChangedConnection = character.AncestryChanged:Connect(function()
+		if not character:IsDescendantOf(game) then
+			ancestryChangedConnection:Disconnect()
+			controller:destroy()
+			if currentController == controller then
+				currentController = nil
+			end
+		end
+	end)
+
+	currentController = controller
+end
+
+local function onRenderStep(deltaTime: number)
+	if not currentController then
+		return
+	end
+
+	-- Since the default control scripts are brittle and hard to hook into, we'll read input from the humanoid itself.
+	-- GetMoveVelocity() returns inputDirection * walkSpeed so we need to divide by walkSpeed again to normalize it.
+	local moveDirection = Vector3.zero
+	if currentController.humanoid.WalkSpeed ~= 0 then
+		moveDirection = currentController.humanoid:GetMoveVelocity() / currentController.humanoid.WalkSpeed
+	end
+	local isJumping = currentController.humanoid.Jump
+	local shouldJump = isJumping and not wasJumping
+
+	-- Reset humanoid Jump to false to disable the default jumping mechanics
+	currentController.humanoid.Jump = false
+	wasJumping = isJumping
+
+	-- Update our own controller with the move direction
+	currentController:setInputDirection(moveDirection)
+	currentController:update(deltaTime)
+
+	-- If the humanoid was attempting to jump, perform a jump action
+	if shouldJump then
+		currentController:performAction("BaseJump")
+	end
+end
+
+local function onSpecialActionInput(_input: string, inputState: Enum.UserInputState, _inputObject: InputObject)
+	if inputState ~= Enum.UserInputState.Begin then
+		return
+	end
+
+	if not currentController then
+		return
+	end
+
+	-- Either roll or dash when the user activates their special move
+	currentController:performAction("BaseSpecial")
+end
+
+local function initialize()
+	player.CharacterAdded:Connect(onCharacterAdded)
+
+	-- The default controls are bound on renderstep, so we'll bind at the highest priority to override them
+	RunService:BindToRenderStep(Constants.CONTROLLER_RENDER_STEP_BIND, Enum.RenderPriority.Last.Value, onRenderStep)
+	ActionManager.bindAction(
+		Constants.SPECIAL_ACTION_BIND,
+		onSpecialActionInput,
+		Constants.KEYBOARD_SPECIAL_KEY_CODE,
+		Constants.GAMEPAD_SPECIAL_KEY_CODE
+	)
+
+	if player.Character then
+		onCharacterAdded(player.Character)
+	end
+end
+
+initialize()
+
+--[[
+	FXScript - This scripts creates and destroys FXController classes as necessary to control
+	effects and sounds on all player characters.
+--]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local safePlayerAdded = require(ReplicatedStorage.Utility.safePlayerAdded)
+local FXController = require(script.Parent.FXController)
+
+local function onCharacterAdded(character: Model)
+	-- Create a new FXController for each character that gets added
+	local fxController = FXController.new(character)
+
+	-- When the character is removed, we need to clean up the FXController
+	local ancestryChangedConnection
+	ancestryChangedConnection = character.AncestryChanged:Connect(function()
+		if not character:IsDescendantOf(game) then
+			ancestryChangedConnection:Disconnect()
+			fxController:destroy()
+		end
+	end)
+end
+
+local function onPlayerAdded(player: Player)
+	player.CharacterAdded:Connect(onCharacterAdded)
+
+	if player.Character then
+		onCharacterAdded(player.Character)
+	end
+end
+
+safePlayerAdded(onPlayerAdded)
+
+--[[
+	SmoothCameraScript - Smooths the camera's motion following the character, allowing different
+	speeds for vertical and horizontal motion.
+
+	Rather than directly smoothing the camera motion, an offset is applied based on the character's velocity.
+	This avoids jitter issues caused by desync between the render framerate and physics step rate.
+--]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local Constants = require(ReplicatedStorage.Platformer.Constants)
+local clampMagnitude = require(ReplicatedStorage.Utility.clampMagnitude)
+
+local camera = Workspace.CurrentCamera
+local player = Players.LocalPlayer
+
+local root = nil
+
+local offsetXZ = Vector3.zero
+local offsetY = Vector3.zero
+
+local function onCharacterAdded(character: Model)
+	root = character:WaitForChild("HumanoidRootPart")
+end
+
+local function onRenderStep(deltaTime: number)
+	if not root then
+		return
+	end
+
+	-- Offset the camera in the opposite direction of the character's velocity so it lags behind
+	offsetXZ -= Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z) * deltaTime
+	offsetY -= Vector3.new(0, root.AssemblyLinearVelocity.Y, 0) * deltaTime
+
+	-- Clamp the offset so we don't lose sight of the character when it's moving fast
+	offsetXZ = clampMagnitude(offsetXZ, Constants.CAMERA_MAX_DISTANCE)
+	offsetY = clampMagnitude(offsetY, Constants.CAMERA_MAX_DISTANCE)
+
+	-- Lerp the offset back to zero so the camera doesn't get left behind
+	offsetXZ = offsetXZ:Lerp(Vector3.zero, math.min(deltaTime * Constants.CAMERA_SMOOTH_HORIZONTAL_SPEED, 1))
+	offsetY = offsetY:Lerp(Vector3.zero, math.min(deltaTime * Constants.CAMERA_SMOOTH_VERTICAL_SPEED, 1))
+
+	-- Apply the offset to the camera
+	local offset = offsetXZ + offsetY
+	camera.CFrame += offset
+end
+
+local function initialize()
+	player.CharacterAdded:Connect(onCharacterAdded)
+	RunService:BindToRenderStep("CameraSmoothing", Enum.RenderPriority.Camera.Value + 1, onRenderStep)
+
+	if player.Character then
+		onCharacterAdded(player.Character)
+	end
+end
+
+initialize()
+
+
